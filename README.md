@@ -1,4 +1,4 @@
-Okay, I understand. You want a comprehensive `README.md` file that describes how to execute this assignment. I will include:
+Index:
 
 *   Directory Structure
 *   About the Assignment
@@ -6,8 +6,6 @@ Okay, I understand. You want a comprehensive `README.md` file that describes how
 *   Execution Instructions
 *   Some Sample Results
 *   Conclusion
-
-Here's the suggested content for the `README.md` file:
 
 ```markdown
 # Assignment 2: Neural Language Modeling
@@ -33,7 +31,6 @@ assignment2/
 ├── README.md
 ├── REPORT.pdf
 └── requirements.txt
-
 
 ## About the Assignment
 
@@ -140,8 +137,6 @@ This project demonstrates the implementation and evaluation of neural language m
 ```
 
 **Next Steps:**
-
 1.  Save this content into a file named `README.md` in the main project directory (`assignment2/`).
 2.  Add the dependency libraries and their versions used in the execution in the `requirements.txt`.
 
-With these steps, you should have a good `README.md` that properly provides all the relevant information for your project. If there are any further concerns, do not hesitate to ask.
