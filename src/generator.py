@@ -7,18 +7,17 @@ import os
 from model_train import FFNNLM, RNNLM, LSTMLM
 import re
 
-def load_vocab(model_path, data_dir):
-    """Loads vocabulary data."""
-    dataset_prefix = os.path.basename(model_path).split('_best_model.pth')[0]
-    dataset_prefix = re.split(r'ffnn_3gram|ffnn_5gram|rnn|lstm', dataset_prefix)[0]
-    vocab_path = os.path.join(data_dir, f"{dataset_prefix}vocab.pkl")
-    print(vocab_path)
+def load_vocab(vocab_path):
+    """Loads vocabulary data from the provided path."""
+    print(vocab_path)  # Keep this for debugging
     try:
         with open(vocab_path, 'rb') as f:
             vocab, word_to_index, index_to_word = pickle.load(f)
             return vocab, word_to_index, index_to_word
     except FileNotFoundError:
-        raise FileNotFoundError(f"Vocabulary file not found: {vocab_path}. Check data directory and model training.")
+        raise FileNotFoundError(f"Vocabulary file not found: {vocab_path}. Make sure the path is correct.")
+    except Exception as e: # catch other exceptions
+        raise Exception(f"Error loading vocabulary from {vocab_path}: {e}")
 
 def predict_top_n_words_ffnn(model, context_sentence, word_to_index, index_to_word, n_gram_size, top_n, device):
     """Predicts the top N most probable next words for FFNN."""
@@ -31,16 +30,12 @@ def predict_top_n_words_ffnn(model, context_sentence, word_to_index, index_to_wo
         context_tensor = torch.tensor([context_indices], dtype=torch.long).to(device)
         output = model(context_tensor)
         probabilities = F.softmax(output, dim=1)
-        # Get the top N probabilities and their indices
         top_probs, top_indices = torch.topk(probabilities, top_n, dim=1)
-
-        # Convert indices to words and format the output
         predictions = []
         for i in range(top_n):
             word = index_to_word[top_indices[0][i].item()]
             prob = top_probs[0][i].item()
-            predictions.append(f"{word} {prob:.4f}")  # Format to 4 decimal places
-
+            predictions.append(f"{word} {prob:.4f}")
     return predictions
 
 
@@ -62,14 +57,13 @@ def predict_top_n_words_rnn_lstm(model, context_sentence, word_to_index, index_t
     return predictions
 
 
-
 def predict(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    vocab, word_to_index, index_to_word = load_vocab(args.trained_model_path, args.data_dir)
+    # Load Vocabulary directly from the provided path
+    vocab, word_to_index, index_to_word = load_vocab(args.vocab_path)
 
-    model_filename = os.path.basename(args.trained_model_path)
     model_type = args.model_type
     n_gram_size = None
 
@@ -108,7 +102,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_words', type=int, required=True, help='Number of top words to predict.')
     parser.add_argument('--trained_model_path', type=str, required=True, help='Path to trained model.')
     parser.add_argument('--model_type', type=str, required=True, choices=['ffnn_3gram', 'ffnn_5gram', 'rnn', 'lstm'], help='Model type.')
-    parser.add_argument('--data_dir', type=str, required=True, help='Path to data directory (for vocab).')
+    parser.add_argument('--vocab_path', type=str, required=True, help='Path to the vocabulary file (vocab.pkl).')  # Changed argument name
     parser.add_argument('--embedding_dim', type=int, default=80, help='Embedding dimension.')
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension.')
     parser.add_argument('--dropout_prob', type=float, default=0.5, help='Dropout probability.')
