@@ -1,134 +1,118 @@
-# generator.py
-
 import torch
 import torch.nn.functional as F
 from nltk.tokenize import word_tokenize
 import pickle
 import argparse
 import os
-from model_train import FFNNLM, RNNLM, LSTMLM  # Import model classes
+from model_train import FFNNLM, RNNLM, LSTMLM
+import re
 
+def load_vocab(model_path, data_dir):
+    """Loads vocabulary data."""
+    dataset_prefix = os.path.basename(model_path).split('_best_model.pth')[0]
+    dataset_prefix = re.split(r'ffnn_3gram|ffnn_5gram|rnn|lstm', dataset_prefix)[0]
+    vocab_path = os.path.join(data_dir, f"{dataset_prefix}vocab.pkl")
+    print(vocab_path)
+    try:
+        with open(vocab_path, 'rb') as f:
+            vocab, word_to_index, index_to_word = pickle.load(f)
+            return vocab, word_to_index, index_to_word
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Vocabulary file not found: {vocab_path}. Check data directory and model training.")
 
-def load_vocab(vocab_path):
-    """Loads vocabulary data from a file."""
-    with open(vocab_path, 'rb') as f:
-        vocab, word_to_index, index_to_word = pickle.load(f)
-    return vocab, word_to_index, index_to_word
-
-
-def predict_next_words_ffnn(model, context_sentence, word_to_index, index_to_word, n_gram_size, num_words_to_predict, device):
-    """Predicts next words using FFNN."""
+def predict_top_n_words_ffnn(model, context_sentence, word_to_index, index_to_word, n_gram_size, top_n, device):
+    """Predicts the top N most probable next words for FFNN."""
     model.eval()
-    predicted_words = []
     current_context = [word.lower() for word in word_tokenize(context_sentence)]
-
     with torch.no_grad():
-        for _ in range(num_words_to_predict):
-            context_indices = [word_to_index.get(word, word_to_index['<UNK>']) for word in current_context[- (n_gram_size - 1):]]
-            if len(context_indices) < (n_gram_size - 1):
-                context_indices = [word_to_index['<PAD>']] * ((n_gram_size - 1) - len(context_indices)) + context_indices
+        context_indices = [word_to_index.get(word, word_to_index['<UNK>']) for word in current_context[-(n_gram_size - 1):]]
+        if len(context_indices) < (n_gram_size - 1):
+            context_indices = [word_to_index['<PAD>']] * ((n_gram_size - 1) - len(context_indices)) + context_indices
+        context_tensor = torch.tensor([context_indices], dtype=torch.long).to(device)
+        output = model(context_tensor)
+        probabilities = F.softmax(output, dim=1)
+        # Get the top N probabilities and their indices
+        top_probs, top_indices = torch.topk(probabilities, top_n, dim=1)
 
-            context_tensor = torch.tensor([context_indices], dtype=torch.long).to(device)
-            output = model(context_tensor)
-            probabilities = torch.exp(output)
-            top_prob, top_index = torch.topk(probabilities, k=1, dim=1)
+        # Convert indices to words and format the output
+        predictions = []
+        for i in range(top_n):
+            word = index_to_word[top_indices[0][i].item()]
+            prob = top_probs[0][i].item()
+            predictions.append(f"{word} {prob:.4f}")  # Format to 4 decimal places
 
-            next_word_index = top_index[0, 0].item()
-            next_word = index_to_word[next_word_index]
-            predicted_words.append(next_word)
-            current_context.append(next_word)
-    return predicted_words
+    return predictions
 
 
-def predict_next_words_rnn_lstm(model, context_sentence, word_to_index, index_to_word, num_words_to_predict, model_type, device):
-    """Predicts the next words using the RNN or LSTM model."""
+def predict_top_n_words_rnn_lstm(model, context_sentence, word_to_index, index_to_word, top_n, device):
+    """Predicts the top N most probable next words for RNN/LSTM."""
     model.eval()
-    predicted_words = []
-    current_context_tokens = [word.lower() for word in word_tokenize(context_sentence)]
-    current_context_indices = [word_to_index.get(word, word_to_index['<UNK>']) for word in current_context_tokens]
-
-    hidden = model.init_hidden(1)
-
+    current_context_indices = [word_to_index.get(word.lower(), word_to_index['<UNK>']) for word in word_tokenize(context_sentence)]
+    hidden = model.init_hidden(1, device)
     with torch.no_grad():
         input_sequence_tensor = torch.tensor([current_context_indices], dtype=torch.long).to(device)
-        for _ in range(num_words_to_predict):
-            output_logprobs, hidden = model(input_sequence_tensor, hidden)
-            probabilities = torch.exp(output_logprobs)
-            top_prob, top_index = torch.topk(probabilities, k=1, dim=1)
+        output_logprobs, hidden = model(input_sequence_tensor, hidden)
+        probabilities = F.softmax(output_logprobs, dim=1)
+        top_probs, top_indices = torch.topk(probabilities, top_n, dim=1)
+        predictions = []
+        for i in range(top_n):
+            word = index_to_word[top_indices[0][i].item()]
+            prob = top_probs[0][i].item()
+            predictions.append(f"{word} {prob:.4f}")
+    return predictions
 
-            next_word_index = top_index[0, 0].item()
-            next_word = index_to_word[next_word_index]
-            predicted_words.append(next_word)
-
-            current_context_indices.append(next_word_index)
-            input_sequence_tensor = torch.tensor([[next_word_index]], dtype=torch.long).to(device)
-
-    return predicted_words
 
 
 def predict(args):
-    """Loads a model and vocabulary, and predicts the next words."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
 
-    # Load Vocabulary
-    vocab, word_to_index, index_to_word = load_vocab(args.vocab_path)
+    vocab, word_to_index, index_to_word = load_vocab(args.trained_model_path, args.data_dir)
 
-    # Load the specified model
-    if args.model_type == 'ffnn_3gram':
-        n_gram_size = 3
-        model = FFNNLM(len(vocab), args.embedding_dim, n_gram_size - 1, args.hidden_dim, args.dropout_prob).to(args.device)
-    elif args.model_type == 'ffnn_5gram':
-        n_gram_size = 5
-        model = FFNNLM(len(vocab), args.embedding_dim, n_gram_size - 1, args.hidden_dim, args.dropout_prob).to(args.device)
-    elif args.model_type == 'rnn':
-        model = RNNLM(len(vocab), args.embedding_dim, args.hidden_dim, args.dropout_prob, args.num_rnn_layers).to(args.device)
-    elif args.model_type == 'lstm':
-        model = LSTMLM(len(vocab), args.embedding_dim, args.hidden_dim, args.dropout_prob, args.num_rnn_layers).to(args.device)
+    model_filename = os.path.basename(args.trained_model_path)
+    model_type = args.model_type
+    n_gram_size = None
+
+    if model_type.startswith("ffnn"):
+        if "3gram" in model_type:  n_gram_size = 3
+        elif "5gram" in model_type: n_gram_size = 5
+        else: raise ValueError("Invalid ffnn type. Use ffnn_3gram or ffnn_5gram.")
+
+    if model_type.startswith('ffnn'):
+        model = FFNNLM(len(vocab), args.embedding_dim, n_gram_size - 1, args.hidden_dim, args.dropout_prob).to(device)
+    elif model_type == 'rnn':
+        model = RNNLM(len(vocab), args.embedding_dim, args.hidden_dim, args.dropout_prob, args.num_rnn_layers).to(device)
+    elif model_type == 'lstm':
+        model = LSTMLM(len(vocab), args.embedding_dim, args.hidden_dim, args.dropout_prob, args.num_rnn_layers).to(device)
     else:
-        raise ValueError(f"Invalid model_type: {args.model_type}")
+        raise ValueError(f"Invalid model type: {model_type}")
 
-    model.load_state_dict(torch.load(args.trained_model_path, map_location=args.device))
+    model.load_state_dict(torch.load(args.trained_model_path, map_location=device))
     model.eval()
 
-    # Get input sentence from the console
     input_sentence = input("Input Sentence: ")
     print(f"Input Sentence: {input_sentence}")
 
+    if model_type.startswith('ffnn'):
+        predictions = predict_top_n_words_ffnn(model, input_sentence, word_to_index, index_to_word, n_gram_size, args.num_words, device)
+    else:
+        predictions = predict_top_n_words_rnn_lstm(model, input_sentence, word_to_index, index_to_word, args.num_words, device)
 
-    # Predict next words
-    if args.model_type.startswith('ffnn'):
-        predictions = predict_next_words_ffnn(model, input_sentence, word_to_index, index_to_word, n_gram_size, args.num_words, args.device)
-    else:  # rnn or lstm
-        predictions = predict_next_words_rnn_lstm(model, input_sentence, word_to_index, index_to_word, args.num_words, args.model_type, args.device)
-
-    # Print predictions
-    print(" ".join(predictions))
+    print("Output:")
+    for pred in predictions:
+        print(pred)
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Predict next words using a trained language model.')
-    # Removed --input_sentence argument
-    parser.add_argument('--num_words', type=int, required=True,
-                        help='Number of words to predict.')
-    parser.add_argument('--vocab_path', type=str, required=True,
-                        help='Path to the vocabulary file (e.g., pp_vocab.pkl).')
-    parser.add_argument('--trained_model_path', type=str, required=True,
-                        help='Path to the trained model file (e.g., best_pp_rnn_model.pth).')
-    parser.add_argument('--model_type', type=str, required=True,
-                        choices=['ffnn_3gram', 'ffnn_5gram', 'rnn', 'lstm'],
-                        help='Type of model to use for prediction.')
-    parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'],
-                        help='Device to use (cuda or cpu).')
-    # Hyperparameter arguments
+    parser = argparse.ArgumentParser(description='Predict next words.')
+    parser.add_argument('--num_words', type=int, required=True, help='Number of top words to predict.')
+    parser.add_argument('--trained_model_path', type=str, required=True, help='Path to trained model.')
+    parser.add_argument('--model_type', type=str, required=True, choices=['ffnn_3gram', 'ffnn_5gram', 'rnn', 'lstm'], help='Model type.')
+    parser.add_argument('--data_dir', type=str, required=True, help='Path to data directory (for vocab).')
     parser.add_argument('--embedding_dim', type=int, default=80, help='Embedding dimension.')
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension.')
     parser.add_argument('--dropout_prob', type=float, default=0.5, help='Dropout probability.')
     parser.add_argument('--num_rnn_layers', type=int, default=2, help='Number of RNN/LSTM layers.')
-
     args = parser.parse_args()
-
-    if args.device == 'cuda' and not torch.cuda.is_available():
-        print("CUDA requested but not available. Using CPU.")
-        args.device = 'cpu'
-    args.device = torch.device(args.device)
 
     predict(args)
